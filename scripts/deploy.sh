@@ -3,6 +3,8 @@ set -euo pipefail
 : "${INSTANCE_ID:?}" "${ARTIFACT_BUCKET:?}" "${ARTIFACT_KEY:?}" "${AWS_REGION:?}"
 PARAMS=$(jq -nc --arg b "$ARTIFACT_BUCKET" --arg k "$ARTIFACT_KEY" '{commands:[
 "set -euo pipefail",
+"for i in $(seq 1 60); do [ -f /var/www/.provisioned ] && break; sleep 5; done",
+"test -f /var/www/.provisioned",
 ("aws s3 cp s3://"+$b+"/"+$k+" /tmp/app.zip"),
 "release=/var/www/releases/$(date +%Y%m%d%H%M%S)",
 "mkdir -p $release",
