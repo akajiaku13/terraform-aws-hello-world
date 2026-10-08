@@ -17,8 +17,7 @@ FAILED=0
 run_check() {
   local name="$1"
   shift
-  local i
-  for i in $(seq 1 "$ATTEMPTS"); do
+  for _ in $(seq 1 "$ATTEMPTS"); do
     if "$@" > /dev/null 2>&1; then
       echo "PASS  $name"
       echo "| $name | PASS |" >> "$SUMMARY"
