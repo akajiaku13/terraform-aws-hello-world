@@ -35,11 +35,31 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
+      simulate_failure_in: ${{ steps.sim.outputs.simulate_failure_in }}
     steps:
       - uses: actions/checkout@v4
       - id: meta
         shell: bash
         run: echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - id: sim
+        name: Decide whether to simulate a failure
+        shell: bash
+        env:
+          INPUT_SIM: ${{ inputs.simulate_failure_in }}
+        run: |
+          # A manual run input wins; otherwise read simulate-failure.txt so a normal push can trigger the simulation.
+          sim="${INPUT_SIM:-none}"
+          if [ "$sim" = "none" ] && [ -f simulate-failure.txt ]; then
+            sim="$(tr -d '[:space:]' < simulate-failure.txt)"
+          fi
+          case "$sim" in
+            none|dev|staging|prod) ;;
+            *) echo "::error::simulate-failure.txt must contain none, dev, staging or prod (got '$sim')"; exit 1 ;;
+          esac
+          if [ "$sim" != "none" ]; then
+            echo "::warning::Failure simulation requested for: $sim"
+          fi
+          echo "simulate_failure_in=$sim" >> "$GITHUB_OUTPUT"
       - name: Unit tests and build once
         shell: bash
         run: |
@@ -68,7 +88,7 @@ jobs:
     with:
       environment: dev
       version: ${{ needs.build.outputs.version }}
-      simulate_failure: ${{ inputs.simulate_failure_in == 'dev' }}
+      simulate_failure: ${{ needs.build.outputs.simulate_failure_in == 'dev' }}
     secrets: inherit
 
   staging:
@@ -77,7 +97,7 @@ jobs:
     with:
       environment: staging
       version: ${{ needs.build.outputs.version }}
-      simulate_failure: ${{ inputs.simulate_failure_in == 'staging' }}
+      simulate_failure: ${{ needs.build.outputs.simulate_failure_in == 'staging' }}
     secrets: inherit
 
   prod:
@@ -86,5 +106,5 @@ jobs:
     with:
       environment: prod
       version: ${{ needs.build.outputs.version }}
-      simulate_failure: ${{ inputs.simulate_failure_in == 'prod' }}
+      simulate_failure: ${{ needs.build.outputs.simulate_failure_in == 'prod' }}
     secrets: inherit
