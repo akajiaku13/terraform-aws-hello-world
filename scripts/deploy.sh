@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${INSTANCE_ID:?}" "${ARTIFACT_BUCKET:?}" "${ARTIFACT_KEY:?}" "${AWS_REGION:?}"
-PARAMS=$(jq -nc --arg b "$ARTIFACT_BUCKET" --arg k "$ARTIFACT_KEY" '{commands:[
+: "${INSTANCE_ID:?}" "${ARTIFACT_BUCKET:?}" "${ARTIFACT_KEY:?}" "${AWS_REGION:?}" "${APP_ENV:?}"
+# Environment-specific settings are injected at deploy time; the artifact itself is identical in every environment.
+CONFIG_B64=$(jq -nc --arg e "$APP_ENV" --arg m "${APP_MESSAGE:-}" '{environment:$e,message:$m}' | base64 -w0)
+PARAMS=$(jq -nc --arg b "$ARTIFACT_BUCKET" --arg k "$ARTIFACT_KEY" --arg c "$CONFIG_B64" '{commands:[
 "set -euo pipefail",
 "for i in $(seq 1 60); do [ -f /var/www/.provisioned ] && break; sleep 5; done",
 "test -f /var/www/.provisioned",
@@ -9,6 +11,7 @@ PARAMS=$(jq -nc --arg b "$ARTIFACT_BUCKET" --arg k "$ARTIFACT_KEY" '{commands:[
 "release=/var/www/releases/$(date +%Y%m%d%H%M%S)",
 "mkdir -p $release",
 "unzip -q /tmp/app.zip -d $release",
+("echo "+$c+" | base64 -d > $release/config.json"),
 "test -f $release/index.html",
 "test -f $release/health.txt",
 "if [ -L /var/www/current ]; then readlink -f /var/www/current > /var/www/previous-release; elif [ -d /var/www/current ]; then mv /var/www/current /var/www/releases/bootstrap; echo /var/www/releases/bootstrap > /var/www/previous-release; fi",

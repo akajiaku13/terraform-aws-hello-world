@@ -2,14 +2,16 @@ name: Destroy infrastructure
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: Environment to destroy
+        type: choice
+        options: [dev, staging, prod]
+        required: true
       confirm:
         description: Type DESTROY
         required: true
 permissions:
   contents: read
-concurrency:
-  group: hello-world-dev
-  cancel-in-progress: false
 env:
   AWS_REGION: eu-north-1
   TF_IN_AUTOMATION: true
@@ -17,7 +19,13 @@ jobs:
   destroy:
     if: inputs.confirm == 'DESTROY'
     runs-on: ubuntu-latest
-    environment: dev
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: hello-world-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_artifact_bucket_name: ${{ inputs.environment == 'dev' && vars.ARTIFACT_BUCKET_NAME || format('{0}-{1}', vars.ARTIFACT_BUCKET_NAME, inputs.environment) }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v5
@@ -26,14 +34,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.13.3 }
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
       - working-directory: infra
-        env:
-          TF_VAR_artifact_bucket_name: ${{ vars.ARTIFACT_BUCKET_NAME }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=hello-world/dev/terraform.tfstate" \
+            -backend-config="key=hello-world/${{ inputs.environment }}/terraform.tfstate" \
             -backend-config="region=${AWS_REGION}" \
             -backend-config="use_lockfile=true"
           aws s3 rm "s3://${TF_VAR_artifact_bucket_name}" --recursive || true

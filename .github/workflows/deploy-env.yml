@@ -1,0 +1,105 @@
+name: Deploy to environment
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target GitHub environment (dev, staging or prod)
+        type: string
+        required: true
+      version:
+        description: Build version (short commit SHA) of the artifact to deploy
+        type: string
+        required: true
+      simulate_failure:
+        description: Break the smoke test on purpose to exercise rollback
+        type: boolean
+        default: false
+permissions:
+  contents: read
+env:
+  AWS_REGION: eu-north-1
+  TF_IN_AUTOMATION: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: hello-world-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      APP_ENV: ${{ inputs.environment }}
+      APP_MESSAGE: ${{ vars.APP_MESSAGE }}
+      TF_VAR_environment: ${{ inputs.environment }}
+      # S3 bucket names are globally unique, so non-dev environments get a suffix (dev keeps its existing bucket).
+      TF_VAR_artifact_bucket_name: ${{ inputs.environment == 'dev' && vars.ARTIFACT_BUCKET_NAME || format('{0}-{1}', vars.ARTIFACT_BUCKET_NAME, inputs.environment) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: hello-world-${{ inputs.version }}
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Verify identity
+        run: aws sts get-caller-identity
+      - name: Terraform init, validate, plan and apply
+        working-directory: infra
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=hello-world/${APP_ENV}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="use_lockfile=true"
+          terraform fmt -check
+          terraform validate
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false -auto-approve tfplan
+          echo "INSTANCE_ID=$(terraform output -raw instance_id)" >> "$GITHUB_ENV"
+          echo "SITE_URL=$(terraform output -raw site_url)" >> "$GITHUB_ENV"
+          echo "ARTIFACT_BUCKET=$(terraform output -raw artifact_bucket)" >> "$GITHUB_ENV"
+      - name: Wait for SSM
+        run: |
+          for i in {1..30}; do
+            aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$INSTANCE_ID" --query 'InstanceInformationList[0].PingStatus' --output text | grep -q Online && exit 0
+            sleep 10
+          done
+          exit 1
+      - name: Verify artifact checksum
+        run: sha256sum -c hello-world.zip.sha256
+      - name: Stage deployment package
+        run: |
+          echo "ARTIFACT_KEY=releases/${{ inputs.version }}/hello-world.zip" >> "$GITHUB_ENV"
+          aws s3 cp hello-world.zip "s3://${ARTIFACT_BUCKET}/releases/${{ inputs.version }}/hello-world.zip" --sse AES256
+      - name: Deploy through SSM
+        id: deploy
+        continue-on-error: true
+        run: bash scripts/deploy.sh
+      - name: Smoke test
+        id: smoke
+        if: steps.deploy.outcome == 'success'
+        continue-on-error: true
+        env:
+          EXPECTED_ENV: ${{ inputs.environment }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+          HEALTH_PATH: ${{ inputs.simulate_failure && '/health-broken.txt' || '/health.txt' }}
+        run: |
+          if [ "${{ inputs.simulate_failure }}" = "true" ]; then
+            echo "::warning::Failure simulation is ON: probing ${HEALTH_PATH} so the smoke test fails"
+          fi
+          bash scripts/smoke-test.sh
+      - name: Roll back on failure
+        if: steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure'
+        run: bash scripts/rollback.sh
+      - name: Fail workflow after rollback
+        if: steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure'
+        run: |
+          echo "::error::Deployment to ${APP_ENV} failed and was rolled back to the previous release"
+          exit 1
+      - name: Show deployed URL
+        run: echo "${APP_ENV} is live at ${SITE_URL}"

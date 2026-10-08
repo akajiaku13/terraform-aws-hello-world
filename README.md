@@ -16,13 +16,18 @@ terraform apply
 
 If an OIDC provider for GitHub already exists in the AWS account, import it or remove the OIDC provider resource and reference the existing provider.
 
-4. In GitHub create environment `dev`. Add these environment variables:
-   - `AWS_ROLE_ARN`: bootstrap output `github_role_arn`
-   - `TF_STATE_BUCKET`: bootstrap output `state_bucket`
-   - `ARTIFACT_BUCKET_NAME`: globally unique, lowercase S3 bucket name
-5. Push to `main` or run **Build, provision and deploy** manually.
-6. Use the URL printed by the deployment job.
-7. Run **Destroy infrastructure**, entering `DESTROY`, when finished.
+4. In GitHub, under Settings > Secrets and variables > Actions, add these once at **repository** level so dev, staging and prod all use them:
+   - Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+   - Variables:
+     - `TF_STATE_BUCKET`: bootstrap output `state_bucket`
+     - `ARTIFACT_BUCKET_NAME`: globally unique, lowercase S3 bucket name. Staging and prod automatically use it with `-staging` / `-prod` appended.
+     - `APP_MESSAGE`: text shown on the page
+   
+   Then create the environments `dev`, `staging` and `prod` (they are also created automatically on first run). Optionally enable **Required reviewers** on `prod` for a manual approval gate. Remove any duplicate secrets or variables from the `dev` environment itself.
+5. Push to `main` or run **Build and promote** manually. The pipeline runs lint, then builds once, then deploys the same artifact to `dev`, `staging` and `prod` in order. Each stage runs a smoke test; a failure rolls that environment back and stops promotion.
+6. To test rollback, run **Build and promote** manually and set `simulate_failure_in` to an environment. That environment's smoke test is forced to fail, so it rolls back to the previous release and later stages do not run. Deploy successfully at least once first, so there is a release to roll back to.
+7. Use the URLs printed by each deployment job. Instances are named `Emmanuel-Multiverse-Project5-<env>`.
+8. Run **Destroy infrastructure**, choosing an environment and entering `DESTROY`, when finished.
 
 ## Important
 
