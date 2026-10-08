@@ -1,0 +1,111 @@
+name: Build, provision and deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: hello-world-dev
+  cancel-in-progress: false
+env:
+  AWS_REGION: eu-north-1
+  TF_IN_AUTOMATION: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Test and build once
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "Hello World" app/index.html
+          rm -rf build && mkdir build
+          sed "s/__VERSION__/${GITHUB_SHA::7}/g" app/index.html > build/index.html
+          cp app/health.txt build/health.txt
+          test "$(cat build/health.txt)" = "OK"
+          (cd build && zip -r ../hello-world.zip .)
+          sha256sum hello-world.zip > hello-world.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hello-world-${{ steps.meta.outputs.version }}
+          path: |
+            hello-world.zip
+            hello-world.zip.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: hello-world-${{ needs.build.outputs.version }}
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.3
+      - name: Verify identity
+        run: aws sts get-caller-identity
+      - name: Terraform init, validate and apply
+        working-directory: infra
+        env:
+          TF_VAR_artifact_bucket_name: ${{ vars.ARTIFACT_BUCKET_NAME }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=hello-world/dev/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="use_lockfile=true"
+          terraform fmt -check
+          terraform validate
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false -auto-approve tfplan
+          echo "INSTANCE_ID=$(terraform output -raw instance_id)" >> "$GITHUB_ENV"
+          echo "SITE_URL=$(terraform output -raw site_url)" >> "$GITHUB_ENV"
+          echo "ARTIFACT_BUCKET=$(terraform output -raw artifact_bucket)" >> "$GITHUB_ENV"
+      - name: Wait for SSM
+        run: |
+          for i in {1..30}; do
+            aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$INSTANCE_ID" --query 'InstanceInformationList[0].PingStatus' --output text | grep -q Online && exit 0
+            sleep 10
+          done
+          exit 1
+      - name: Verify artifact checksum
+        run: sha256sum -c hello-world.zip.sha256
+      - name: Stage deployment package
+        run: |
+          echo "ARTIFACT_KEY=releases/${{ needs.build.outputs.version }}/hello-world.zip" >> "$GITHUB_ENV"
+          aws s3 cp hello-world.zip "s3://${ARTIFACT_BUCKET}/releases/${{ needs.build.outputs.version }}/hello-world.zip" --sse AES256
+      - name: Deploy through SSM
+        id: deploy
+        continue-on-error: true
+        run: bash scripts/deploy.sh
+      - name: External health check
+        id: health
+        if: steps.deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          for i in {1..12}; do curl -fsS "$SITE_URL/health.txt" | grep -qx OK && exit 0; sleep 5; done
+          exit 1
+      - name: Roll back on failure
+        if: steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure'
+        run: bash scripts/rollback.sh
+      - name: Fail workflow after rollback
+        if: steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure'
+        run: exit 1
+      - name: Show deployed URL
+        run: echo "$SITE_URL"

@@ -1,0 +1,4 @@
+environment          = "dev"
+instance_type        = "t3.micro"
+artifact_bucket_name = "YOUR-GLOBALLY-UNIQUE-ARTIFACT-BUCKET"
+allowed_http_cidr    = "0.0.0.0/0"

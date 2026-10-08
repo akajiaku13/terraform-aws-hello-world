@@ -1,0 +1,40 @@
+name: Destroy infrastructure
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DESTROY
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: hello-world-dev
+  cancel-in-progress: false
+env:
+  AWS_REGION: eu-north-1
+  TF_IN_AUTOMATION: true
+jobs:
+  destroy:
+    if: inputs.confirm == 'DESTROY'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.13.3 }
+      - working-directory: infra
+        env:
+          TF_VAR_artifact_bucket_name: ${{ vars.ARTIFACT_BUCKET_NAME }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=hello-world/dev/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="use_lockfile=true"
+          aws s3 rm "s3://${TF_VAR_artifact_bucket_name}" --recursive || true
+          terraform destroy -input=false -auto-approve
