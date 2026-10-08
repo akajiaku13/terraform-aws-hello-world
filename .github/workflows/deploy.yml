@@ -58,6 +58,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.3
+          terraform_wrapper: false
       - name: Verify identity
         run: aws sts get-caller-identity
       - name: Terraform init, validate and apply

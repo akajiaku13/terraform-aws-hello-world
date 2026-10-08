@@ -18,7 +18,11 @@ PARAMS=$(jq -nc --arg b "$ARTIFACT_BUCKET" --arg k "$ARTIFACT_KEY" '{commands:[
 "curl -fsS http://localhost/health.txt | grep -qx OK"
 ]}')
 COMMAND_ID=$(aws ssm send-command --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript --comment "Deploy $ARTIFACT_KEY" --parameters "$PARAMS" --query 'Command.CommandId' --output text)
-aws ssm wait command-executed --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" || true
-STATUS=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --query Status --output text)
+# The built-in waiter gives up after ~100s, but the command may wait up to 5 minutes for first-boot provisioning.
+STATUS=Pending
+for _ in $(seq 1 90); do
+  STATUS=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+  case "$STATUS" in Pending|InProgress|Delayed) sleep 10 ;; *) break ;; esac
+done
 aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --query '[StandardOutputContent,StandardErrorContent]' --output text
 [[ "$STATUS" == "Success" ]]

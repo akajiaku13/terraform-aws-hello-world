@@ -5,3 +5,4 @@
 .terraform.lock.hcl
 build/
 *.zip
+arn.txt
