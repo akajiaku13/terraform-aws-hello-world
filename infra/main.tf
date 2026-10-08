@@ -155,7 +155,7 @@ resource "aws_instance" "web" {
 
   tags = {
     Name        = "hello-${var.environment}"
-    Environment = var.environment
+    environment = var.environment
     ManagedBy   = "Terraform"
   }
 }
